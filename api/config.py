@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
+_raw_anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY: str | None = _raw_anthropic_key if _raw_anthropic_key and not _raw_anthropic_key.endswith("...") else None
 AGENT_MODEL: str = os.getenv("AGENT_MODEL", "claude-haiku-4-5-20251001")
 
 # Kite-specific: funded testnet wallet provided in KITE_X402_PATCH.md
