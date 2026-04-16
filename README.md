@@ -117,7 +117,7 @@ This lets you test the full HTTP/payment flow without spending API credits.
 ### No `PAY_TO_ADDRESS`
 
 Defaults to the pre-funded Kite testnet wallet from `KITE_X402_PATCH.md`:
-`0x46D63636B0642D37af42180dd4d1B578923a8868`
+`0x4812fC05e79ddc616346d10A8826B2bdf5e6ab20`
 
 Payment verification still fires normally. Set your own address before mainnet.
 
@@ -251,9 +251,9 @@ Mirrors the Kite reference implementation at `https://x402.dev.gokite.ai/api/wea
     "resource": "http://localhost:8000/market/bid",
     "description": "Confidential Agent Market — submit buy bid",
     "mimeType": "application/json",
-    "payTo": "0x46D63636B0642D37af42180dd4d1B578923a8868",
+    "payTo": "0x4812fC05e79ddc616346d10A8826B2bdf5e6ab20",
     "maxTimeoutSeconds": 300,
-    "asset": "0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63",
+    "asset": "0x8794c866DB97E0E7c1a0E2CF51D3E1460cB37F9e",
     "extra": null,
     "merchantName": "Confidential Agent Market"
   }],
@@ -272,7 +272,7 @@ Mirrors the Kite reference implementation at `https://x402.dev.gokite.ai/api/wea
 | Faucet | `https://faucet.gokite.ai` | — | — |
 
 **Testnet contracts:**
-- Test USDT: `0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63`
+- Test USDT: `0x8794c866DB97E0E7c1a0E2CF51D3E1460cB37F9e`
 - Pieverse facilitator: `0x12343e649e6b2b2b77649DFAb88f103c02F3C78b`
 
 **Mainnet contracts:**
