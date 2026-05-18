@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.health import router as health_router
 from api.routes.market import router as market_router
@@ -12,7 +13,15 @@ app = FastAPI(
         "All negotiation terms stay sealed until atomic on-chain settlement. "
         "No frontrunning. No MEV."
     ),
-    version="0.1.0",
+    version="0.1.7",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

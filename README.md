@@ -6,157 +6,214 @@ A decentralised OTC market where AI agents negotiate trade terms inside a Truste
 
 ---
 
-## Architecture
+## How It Works
 
 ```
-Buyer Agent (Claude Haiku)
-        │  x402 payment (gokite-aa / Kite testnet)
+Browser (deal-room FE)
+        │  clicks "Start Sealed Negotiation"
         ▼
-FastAPI Service  ──────────────────────────────────────
-  POST /market/bid     $0.01 Test USDT
-  POST /market/ask     $0.01 Test USDT
-  GET  /market/status  $0.001 Test USDT
-  POST /market/settle  $0.05 Test USDT
+FastAPI Backend (Phala Cloud CVM — Intel TDX)
+  POST /market/bid     $0.01 Test USDT (x402 gokite-aa)
+  POST /market/ask     $0.01 Test USDT (x402 gokite-aa)
+  POST /market/settle  $0.05 Test USDT (x402 gokite-aa)
         │
         ▼
-TEE Negotiation Engine (Phala Cloud TDX)        ← Phase 2
-  Buyer Agent  ←→ negotiation loop ←→ Seller Agent
-  max 5 rounds — terms encrypted at rest
-  DCAP attestation on match
+Negotiation Engine (inside the TEE)
+  Buyer Agent (Claude Haiku) ←→ max 5 rounds ←→ Seller Agent (Claude Haiku)
+  Terms encrypted at rest — DCAP attestation on match
         │
         ▼
-ConfidentialEscrow.sol (Kite Chain)             ← Phase 2
-  verifyAttestation() → release funds → emit Settlement
+ConfidentialEscrow.sol (Kite Testnet, chain 2368)
+  settle(escrowId, attestation) → release KXUSD → emit EscrowSettled
 ```
+
+The backend runs **inside a Phala Cloud CVM** (Confidential Virtual Machine). Every settlement produces a DCAP TDX quote that proves the negotiation happened inside a genuine Intel TDX enclave — verifiable on-chain without trusting any intermediary.
 
 ---
 
-## Project Structure
+## Repository Structure
 
 ```
 confidential-agent-market/
-├── api/
-│   ├── main.py                  ← FastAPI app + 402 exception handler
+├── api/                         ← Python backend (FastAPI)
+│   ├── main.py                  ← app entry point, CORS, 402 handler
 │   ├── config.py                ← all env vars with documented defaults
 │   ├── routes/
-│   │   ├── market.py            ← /market/bid, /ask, /status, /settle
-│   │   └── health.py            ← GET /health (no payment)
+│   │   ├── market.py            ← POST /market/bid, /ask, /settle  GET /market/status
+│   │   └── health.py            ← GET /health (free, no payment)
 │   ├── services/
-│   │   ├── payment.py           ← gokite-aa 402 flow (Pieverse facilitator)
-│   │   └── negotiation.py       ← agent negotiation loop + simulator fallback
+│   │   ├── payment.py           ← gokite-aa x402 flow (Pieverse facilitator)
+│   │   ├── negotiation.py       ← Claude Haiku negotiation loop + simulator fallback
+│   │   ├── tee.py               ← Phala CVM DCAP attestation (dstack-sdk + HTTP fallback)
+│   │   └── escrow.py            ← web3.py async client for ConfidentialEscrow.sol
 │   └── models/
 │       ├── order.py             ← Order, OrderResponse (Pydantic v2)
 │       └── settlement.py        ← SettleRequest, SettlementResult
-├── agents/                      ← Phase 2: standalone agent scripts
-├── contracts/                   ← Phase 2: ConfidentialEscrow.sol
+├── deal-room/                   ← Next.js 14 frontend (static export → Vercel)
+│   ├── src/
+│   │   ├── app/                 ← App Router: layout.tsx + page.tsx
+│   │   ├── components/
+│   │   │   ├── DealRoom.tsx     ← main component — orchestrates the full flow
+│   │   │   ├── TEEStatusBar.tsx ← top banner polling Phala CVM /health every 10s
+│   │   │   ├── NegotiationLog.tsx   ← animated round-by-round transcript
+│   │   │   ├── AttestationPanel.tsx ← collapsible DCAP quote viewer (parse + copy)
+│   │   │   └── SettlementCard.tsx   ← on-chain tx confirmation + KiteScan link
+│   │   └── lib/
+│   │       ├── kite.ts          ← viem public client for Kite Testnet (chain 2368)
+│   │       └── escrow.ts        ← read ConfidentialEscrow state via viem
+│   ├── .env.example             ← copy to .env.local and fill in values
+│   ├── package.json             ← Next 14, Tailwind, lucide-react, viem
+│   └── next.config.js           ← output: 'export' → dist/
+├── agents/                      ← standalone agent scripts
+├── contracts/                   ← ConfidentialEscrow.sol
 ├── tests/
-├── .env.example
-├── CLAUDE.md
-└── KITE_X402_PATCH.md
+└── .env.example                 ← backend env template
 ```
 
 ---
 
-## Quick Start
+## Backend
 
-### 1. Install dependencies
+### What it does
+
+- Exposes four paid HTTP endpoints using Kite's `gokite-aa` x402 payment scheme
+- On `/market/settle`, spins up two Claude Haiku agents that negotiate in up to 5 rounds inside the TEE
+- Gets a DCAP TDX attestation quote from the Phala guest agent (dstack-sdk, falls back to HTTP, falls back to a clearly-marked mock outside CVM)
+- If `ESCROW_CONTRACT_ADDRESS` and `AGENT_PRIVATE_KEY` are set, calls `ConfidentialEscrow.settle()` on Kite testnet via web3.py and returns the tx hash
+- Falls back to a deterministic simulator when `ANTHROPIC_API_KEY` is absent (useful for local testing)
+
+### Run locally
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env          # edit as needed
 ```
 
-### 2. Configure environment
+Minimum for local dev — skip all payments and use the simulator:
 
 ```bash
-cp .env.example .env
+SKIP_PAYMENT_CHECK=true uvicorn api.main:app --reload
 ```
 
-Edit `.env`. At minimum for local dev set `SKIP_PAYMENT_CHECK=true` (see Fallbacks below).
+Swagger docs at `http://localhost:8000/docs`.
 
-### 3. Run
+### Run with real agents (no payments)
 
 ```bash
+ANTHROPIC_API_KEY=sk-ant-... SKIP_PAYMENT_CHECK=true uvicorn api.main:app --reload
+```
+
+### Full live testnet flow
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... \
+PAY_TO_ADDRESS=0xYourWallet \
+AGENT_PRIVATE_KEY=0x... \
+ESCROW_CONTRACT_ADDRESS=0xBB2835fC4d189340a98084A50DD0B36b4Ff50Ca2 \
 uvicorn api.main:app --reload
 ```
 
-Docs at `http://localhost:8000/docs`.
+### Deploy to Phala Cloud (production)
 
----
-
-## Environment Variables
-
-| Variable | Default | Required | Notes |
-|---|---|---|---|
-| `ANTHROPIC_API_KEY` | *(none)* | No | Omit to use negotiation simulator |
-| `AGENT_MODEL` | `claude-haiku-4-5-20251001` | No | Swap to `claude-sonnet-4-6` for demo |
-| `PAY_TO_ADDRESS` | `0x46D636...8868` | No | Funded testnet wallet — safe default |
-| `FACILITATOR_URL` | `https://facilitator.pieverse.io` | No | Pieverse, not x402.org |
-| `SKIP_PAYMENT_CHECK` | `false` | No | Set `true` to bypass 402 locally |
-| `KITE_RPC_URL` | `https://rpc-testnet.gokite.ai/` | No | |
-| `KITE_CHAIN_ID` | `2368` | No | 2366 for mainnet |
-| `TESTNET_ASSET` | `0x0fF539...63` | No | Test USDT — not USDC.e |
-| `ESCROW_CONTRACT_ADDRESS` | *(empty)* | Phase 2 | Deploy contract first |
-| `PHALA_API_KEY` | *(empty)* | Phase 2 | |
-| `PHALA_CVM_ENDPOINT` | *(empty)* | Phase 2 | |
-| `AGENT_PRIVATE_KEY` | *(none)* | Phase 2 | Testnet only — never commit |
-
----
-
-## Fallbacks
-
-### No `ANTHROPIC_API_KEY`
-
-The negotiation engine falls back to a **deterministic simulator**:
-
-- If buyer max price ≥ seller floor price → returns `status: matched` at the midpoint price
-- Otherwise → returns `status: no_match`
-- `attestation` field reads `"SIMULATED_NO_API_KEY"` so it's visible in every response
-
-This lets you test the full HTTP/payment flow without spending API credits.
-
-### No `PAY_TO_ADDRESS`
-
-Defaults to the pre-funded Kite testnet wallet from `KITE_X402_PATCH.md`:
-`0x4812fC05e79ddc616346d10A8826B2bdf5e6ab20`
-
-Payment verification still fires normally. Set your own address before mainnet.
-
-### `SKIP_PAYMENT_CHECK=true`
-
-Bypasses the `X-PAYMENT` header check and Pieverse settlement call entirely. All endpoints return 200 with no payment required. Use this for local development and route testing.
-
----
-
-## Payment Flow (gokite-aa scheme)
-
-Kite uses its own x402 scheme — **not** the Coinbase `exact` scheme. The Coinbase `x402[fastapi]` PyPI middleware does not work here.
+The backend is containerised and runs on Phala Cloud CVM for TEE attestation. Build and push the Docker image, then deploy via the Phala dashboard or CLI. The CVM endpoint URL takes the form:
 
 ```
-1. Agent calls endpoint with no X-PAYMENT header
-2. Service returns HTTP 402:
-   {
-     "error": "X-PAYMENT header is required",
-     "accepts": [{
-       "scheme": "gokite-aa",
-       "network": "kite-testnet",
-       "maxAmountRequired": "10000000000000000",
-       "payTo": "0x46D636...8868",
-       "asset": "0x0fF539...63",   ← Test USDT (18 decimals)
-       ...
-     }],
-     "x402Version": 1
-   }
-3. Agent constructs X-PAYMENT header (base64-encoded JSON):
-   { "authorization": {...}, "signature": "0x..." }
-4. Agent retries request with X-PAYMENT header
+https://<hash>-8000.dstack-pha-prod5.phala.network
+```
+
+This URL goes into the frontend's `NEXT_PUBLIC_CVM_URL`.
+
+### Backend environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | *(none)* | Omit → deterministic simulator |
+| `AGENT_MODEL` | `claude-haiku-4-5-20251001` | Swap to `claude-sonnet-4-6` for final demo |
+| `PAY_TO_ADDRESS` | `0x4812fC...ab20` | Funded testnet wallet — safe default |
+| `FACILITATOR_URL` | `https://facilitator.pieverse.io` | Pieverse, not x402.org |
+| `SKIP_PAYMENT_CHECK` | `false` | `true` to bypass 402 locally |
+| `KITE_RPC_URL` | `https://rpc-testnet.gokite.ai/` | |
+| `KITE_CHAIN_ID` | `2368` | 2366 for mainnet |
+| `TESTNET_ASSET` | `0x0fF539...63` | KXUSD (18 decimals) — not USDC.e |
+| `ESCROW_CONTRACT_ADDRESS` | *(empty)* | Deploy contract first; omit to skip on-chain settle |
+| `AGENT_PRIVATE_KEY` | *(none)* | Testnet only — never commit |
+| `PHALA_CVM_ENDPOINT` | *(empty)* | HTTP fallback for tappd; not needed inside CVM |
+
+---
+
+## Frontend (deal-room)
+
+### What it does
+
+A dark-themed Next.js 14 app that demos the full deal flow in a browser:
+
+1. **TEE Status Bar** — polls Phala CVM `/health` every 10 seconds; shows LIVE / DOWN
+2. **Start Sealed Negotiation** — places a buy bid (WKITE @ 1.00) and sell ask (WKITE @ 0.95) simultaneously via the CVM API
+3. **Negotiation Log** — animates intermediate rounds while the TEE negotiates; shows the final agreed price from the API response
+4. **Attestation Panel** — collapsible panel showing the raw DCAP TDX quote with parsed TEE type, quote size, and copy-to-clipboard
+5. **Settlement Card** — if the API returns a `tx_hash`, shows the on-chain confirmation with a KiteScan link
+
+### Run locally
+
+```bash
+cd deal-room
+cp .env.example .env.local    # add your NEXT_PUBLIC_CVM_URL
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+### Deploy to Vercel
+
+**1. Set the env var on Vercel:**
+
+```bash
+cd deal-room
+vercel env add NEXT_PUBLIC_CVM_URL production
+# paste your Phala CVM URL when prompted
+```
+
+Optionally override the demo wallet:
+
+```bash
+vercel env add NEXT_PUBLIC_WALLET_ADDRESS production
+```
+
+**2. Deploy:**
+
+```bash
+vercel --prod
+```
+
+The app is a static export (`output: 'export'` in `next.config.js`) so it deploys as a CDN-served bundle with no serverless functions. All API calls go directly from the browser to the Phala CVM URL — CORS is already enabled on the backend (`api/main.py` v0.1.7).
+
+**When the Phala CVM URL changes** (new deployment), update the env var on Vercel and redeploy — `NEXT_PUBLIC_*` vars are baked in at build time.
+
+### Frontend environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `NEXT_PUBLIC_CVM_URL` | *(empty)* | Full Phala CVM URL — required for the app to work |
+| `NEXT_PUBLIC_WALLET_ADDRESS` | `0x4812fC...ab20` | Demo wallet used as buyer/seller address |
+
+---
+
+## x402 Payment Flow (gokite-aa)
+
+Kite uses its own x402 scheme — **not** the Coinbase `exact` scheme.
+
+```
+1. Client calls endpoint with no X-PAYMENT header
+2. Service returns HTTP 402 with gokite-aa payment details
+3. Client constructs X-PAYMENT header (base64-encoded JSON with EIP-3009 authorization + signature)
+4. Client retries with X-PAYMENT header
 5. Service calls POST https://facilitator.pieverse.io/v2/settle
-6. Facilitator executes transferWithAuthorization on-chain to payTo
+6. Facilitator executes transferWithAuthorization on-chain
 7. Service delivers response
 ```
 
-Token amounts use 18 decimals (Test USDT):
-
-| Endpoint | Amount (wei) | USD equiv |
+| Endpoint | Cost (wei) | USD equiv |
 |---|---|---|
 | `POST /market/bid` | `10000000000000000` | ~$0.01 |
 | `POST /market/ask` | `10000000000000000` | ~$0.01 |
@@ -165,105 +222,7 @@ Token amounts use 18 decimals (Test USDT):
 
 ---
 
-## Testing
-
-### Option A — Full bypass (no wallet, no API key)
-
-```bash
-SKIP_PAYMENT_CHECK=true uvicorn api.main:app --reload
-```
-
-Test all endpoints directly:
-
-```bash
-# Health (always free)
-curl http://localhost:8000/health
-
-# Submit a bid
-curl -X POST http://localhost:8000/market/bid \
-  -H "Content-Type: application/json" \
-  -d '{"asset":"WKITE","price":"0.95","quantity":"100","side":"buy"}'
-
-# Submit an ask
-curl -X POST http://localhost:8000/market/ask \
-  -H "Content-Type: application/json" \
-  -d '{"asset":"WKITE","price":"1.00","quantity":"100","side":"sell"}'
-
-# Check book depth
-curl http://localhost:8000/market/status
-
-# Trigger settlement (replace IDs with values from bid/ask responses)
-curl -X POST http://localhost:8000/market/settle \
-  -H "Content-Type: application/json" \
-  -d '{
-    "bid_id": "<bid_order_id>",
-    "ask_id": "<ask_order_id>",
-    "buyer_address": "0xBuyer...",
-    "seller_address": "0xSeller..."
-  }'
-```
-
-### Option B — Test 402 fires correctly (payment required)
-
-```bash
-uvicorn api.main:app --reload  # SKIP_PAYMENT_CHECK not set
-curl -X POST http://localhost:8000/market/bid \
-  -H "Content-Type: application/json" \
-  -d '{"asset":"WKITE","price":"0.95","quantity":"100","side":"buy"}'
-# → HTTP 402 with gokite-aa payment details
-```
-
-### Option C — Live agents, payment bypassed
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-... SKIP_PAYMENT_CHECK=true uvicorn api.main:app --reload
-```
-
-Then hit `/market/settle` — negotiation runs against real Claude Haiku. Watch the `rounds` and `attestation` fields in the response.
-
-### Option D — Full live flow (testnet)
-
-Requires:
-- Wallet funded with Test USDT from `https://faucet.gokite.ai`
-- `AGENT_PRIVATE_KEY` set
-- Kite-compatible x402 client (see `https://github.com/gokite-ai/x402`)
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-... \
-PAY_TO_ADDRESS=0xYourWallet \
-AGENT_PRIVATE_KEY=0x... \
-uvicorn api.main:app --reload
-```
-
----
-
-## Reference 402 Response
-
-Mirrors the Kite reference implementation at `https://x402.dev.gokite.ai/api/weather?location=London`:
-
-```json
-{
-  "error": "X-PAYMENT header is required",
-  "accepts": [{
-    "scheme": "gokite-aa",
-    "network": "kite-testnet",
-    "maxAmountRequired": "10000000000000000",
-    "resource": "http://localhost:8000/market/bid",
-    "description": "Confidential Agent Market — submit buy bid",
-    "mimeType": "application/json",
-    "payTo": "0x4812fC05e79ddc616346d10A8826B2bdf5e6ab20",
-    "maxTimeoutSeconds": 300,
-    "asset": "0x8794c866DB97E0E7c1a0E2CF51D3E1460cB37F9e",
-    "extra": null,
-    "merchantName": "Confidential Agent Market"
-  }],
-  "x402Version": 1
-}
-```
-
----
-
-## Kite Network Info
+## Kite Network
 
 | Network | RPC | Chain ID | Explorer |
 |---|---|---|---|
@@ -271,21 +230,31 @@ Mirrors the Kite reference implementation at `https://x402.dev.gokite.ai/api/wea
 | Mainnet | `https://rpc.gokite.ai/` | 2366 | `https://kitescan.ai/` |
 | Faucet | `https://faucet.gokite.ai` | — | — |
 
-**Testnet contracts:**
-- Test USDT: `0x8794c866DB97E0E7c1a0E2CF51D3E1460cB37F9e`
+**Deployed contracts:**
+- ConfidentialEscrow: `0xBB2835fC4d189340a98084A50DD0B36b4Ff50Ca2` (Kite testnet)
+- KXUSD (Test USDT): `0x1b7425d288ea676FCBc65c29711fccF0B6D5c293`
 - Pieverse facilitator: `0x12343e649e6b2b2b77649DFAb88f103c02F3C78b`
-
-**Mainnet contracts:**
-- USDC.e: `0x7aB6f3ed87C42eF0aDb67Ed95090f8bF5240149e`
-- WKITE: `0xcc788DC0486CD2BaacFf287eea1902cc09FbA570`
 
 ---
 
-## Phase 2 Additions (in progress)
+## Status
 
-- [ ] Real TEE negotiation via Phala Cloud TDX — port DCAP attestation from DealProof
-- [ ] `ConfidentialEscrow.sol` deployed on Kite testnet
-- [ ] Full settle flow: negotiate → DCAP attest → escrow release → on-chain `Settlement` event
-- [ ] `api/services/tee.py` — Phala Cloud CVM client
-- [ ] `api/services/escrow.py` — web3.py escrow interaction
+### Backend (v0.1.7)
+- [x] FastAPI + x402 `gokite-aa` payment flow (Pieverse facilitator)
+- [x] Claude Haiku negotiation loop + deterministic simulator fallback
+- [x] DCAP attestation via Phala CVM (`tee.py` — dstack-sdk + HTTP fallback)
+- [x] `ConfidentialEscrow.sol` client via web3.py (`escrow.py`)
+- [x] CORS enabled for Vercel frontend
+- [x] Deployed on Phala Cloud TDX
+
+### Frontend (deal-room)
+- [x] Next.js 14 static export — Tailwind, lucide-react, viem
+- [x] TEE status bar with live CVM health polling
+- [x] Animated negotiation transcript
+- [x] DCAP attestation panel (quote parsing, copy-to-clipboard)
+- [x] On-chain settlement card with KiteScan link
+- [x] All hardcoded values extracted to env vars / derived constants
+
+### Remaining
 - [ ] Swap `AGENT_MODEL` to `claude-sonnet-4-6` for final demo
+- [ ] Full funded escrow end-to-end: deposit → negotiate → DCAP attest → on-chain release

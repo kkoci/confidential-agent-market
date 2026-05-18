@@ -1,0 +1,45 @@
+# Keep secrets and dev clutter out of the build context.
+
+# Secrets — never bake into the image
+.env
+.env.*
+!.env.example
+
+# Local Python state
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local venv directories
+venv
+.venv
+confidentialagentmarketvenv
+
+# VCS
+.git
+.gitignore
+
+# IDE / editor
+.idea
+.vscode
+.claude
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+*.stackdump
+
+# Tests + scripts not needed in the runtime image
+tests
+scripts
+
+# Docs not needed at runtime
+*.md
+LICENSE
+
+# The broken UTF-16 freeze — Docker uses requirements-prod.txt
+requirements.txt

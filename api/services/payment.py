@@ -1,7 +1,14 @@
 """
 Kite gokite-aa x402 payment layer.
-Replaces Coinbase x402[fastapi] middleware — Kite uses its own scheme and Pieverse facilitator.
-Reference: KITE_X402_PATCH.md, https://github.com/gokite-ai/x402
+Uses Pieverse's /v2/settle endpoint with the documented gokite-aa request shape:
+`{authorization, signature, network}`.
+
+The PIEVERSE_FIX.md migration to /v2/verify + paymentPayload/paymentRequirements
+turned out to be premature — that path is advertised in /v2/supported but is
+not functional (returns JS undefined errors) and not documented in Kite's own
+docs. See PIEVERSE_FIX.md (superseded) for the investigation trail.
+
+Reference: KITE_X402_PATCH.md, https://docs.gokite.ai
 """
 import base64
 import json
@@ -56,17 +63,20 @@ async def verify_and_settle(payment_header: str) -> bool:
     """Decode X-PAYMENT header (base64 JSON) and settle via Pieverse /v2/settle."""
     try:
         decoded = json.loads(base64.b64decode(payment_header).decode())
+        request_body = {
+            "authorization": decoded.get("authorization"),
+            "signature":     decoded.get("signature"),
+            "network":       KITE_NETWORK,
+        }
+        print(f"[pieverse] POST {FACILITATOR_URL}/v2/settle")
+        print(f"[pieverse] request: {json.dumps(request_body)}")
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{FACILITATOR_URL}/v2/settle",
-                json={
-                    "authorization": decoded.get("authorization"),
-                    "signature": decoded.get("signature"),
-                    "network": KITE_NETWORK,
-                },
-            )
+            resp = await client.post(f"{FACILITATOR_URL}/v2/settle", json=request_body)
+        print(f"[pieverse] HTTP {resp.status_code}")
+        print(f"[pieverse] response: {resp.text}")
         return resp.status_code == 200
-    except Exception:
+    except Exception as exc:
+        print(f"[pieverse] EXCEPTION: {exc!r}")
         return False
 
 

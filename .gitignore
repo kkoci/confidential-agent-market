@@ -51,5 +51,10 @@ logs/
 *.md
 !README.md
 
+# Node / Next.js (deal-room)
+node_modules/
+.next/
+.eslintcache
+
 # Claude internal
 .claude/
